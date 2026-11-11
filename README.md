@@ -19,11 +19,21 @@
 
 需要 Node.js 18 或更新（装过 DSH / Claude Code / Codex 的电脑一般已经有了）。
 
-**1. 电脑上运行一次**（Mac 用「终端」，Windows 用 PowerShell）：
+**1. 电脑上运行一次**
+
+Mac（「终端」）：
 
 ```bash
-npx github:linchuanXu/inkwatch install
+curl -fsSL https://raw.githubusercontent.com/linchuanXu/inkwatch/main/bin/inkwatch.mjs -o /tmp/inkwatch.mjs && node /tmp/inkwatch.mjs install
 ```
+
+Windows（PowerShell）：
+
+```powershell
+iwr https://raw.githubusercontent.com/linchuanXu/inkwatch/main/bin/inkwatch.mjs -OutFile $env:TEMP\inkwatch.mjs; node $env:TEMP\inkwatch.mjs install
+```
+
+整个电脑端就是这一个文件，只用 Node 自带模块。（新版 npm 默认不让 `npx` 直接从 GitHub 拉包，所以这里用下载加运行。）
 
 它会：
 
@@ -42,11 +52,13 @@ npx github:linchuanXu/inkwatch install
 
 ## 常用命令
 
-把 `install` 换成别的就行：
+装好后脚本在 `~/.inkwatch/inkwatch.mjs`：
 
 ```bash
-npx github:linchuanXu/inkwatch status
+node ~/.inkwatch/inkwatch.mjs status
 ```
+
+（Windows：`node $HOME\.inkwatch\inkwatch.mjs status`）
 
 | 命令 | 作用 |
 |---|---|
@@ -61,14 +73,14 @@ npx github:linchuanXu/inkwatch status
 
 **X4 显示「连不上电脑」**
 - 电脑和 X4 要连同一个 Wi-Fi（公司访客网络常常不让设备互相访问）。
-- 路由器重启后电脑地址可能变了：运行 `status` 看新地址，在 X4 右下角齿轮重新填。想一劳永逸，可以在路由器里给这台电脑固定 IP。
+- 路由器重启后电脑地址可能变了：运行 `node ~/.inkwatch/inkwatch.mjs status` 看新地址，在 X4 右下角齿轮重新填。想一劳永逸，可以在路由器里给这台电脑固定 IP。
 - Windows 检查防火墙是否放行了 Node.js（专用网络）。
 
 **X4 不在身边时会不会卡住智能体？** 不会。X4 超过 90 秒没来取状态，危险命令照常交给智能体自己的确认界面；X4 上 10 分钟没人点，也会交回去。电脑上的后台服务没开时，钩子什么都不做，智能体照常运行。
 
 **Codex**：需要在 `~/.codex/config.toml` 里打开 hooks 功能（按 Codex 文档）。Codex 的钩子只能「拦下」不能「放行」，所以在 X4 上点「允许」等于交给 Codex 自己的确认。
 
-**DSH**：安装时写进 `~/.dsh/profiles/*/cordis.patch.yml`（用 DSH 自带的 Claude Code 钩子兼容桥）。之后新建的 profile，用 `dsh <profile> --patch ~/.inkwatch/dsh-patch.yml`，或再运行一次 `install`。
+**DSH**：安装时写进 `~/.dsh/profiles/*/cordis.patch.yml`（用 DSH 自带的 Claude Code 钩子兼容桥）。之后新建的 profile，用 `dsh <profile> --patch ~/.inkwatch/dsh-patch.yml`，或再运行一次 `node ~/.inkwatch/inkwatch.mjs install`。
 
 ## 它怎么工作
 

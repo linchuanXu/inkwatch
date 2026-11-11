@@ -228,13 +228,13 @@ local function poll(wait)
       end
       schedule(0)
     elseif res.ok and res.status == 401 then
-      S.conn, S.err = "lost", "配对码不对，电脑上运行 inkwatch pair 查看"
+      S.conn, S.err = "lost", "配对码不对，电脑上运行 inkwatch status 查看"
       ctx:invalidate()
     else
       S.fails = S.fails + 1
       local was = S.conn
       S.conn = "lost"
-      S.err = res.err == "no_network" and "X4 没连上 Wi-Fi" or "连不上电脑，确认 inkwatch serve 在运行、和 X4 在同一网络"
+      S.err = res.err == "no_network" and "X4 没连上 Wi-Fi" or "连不上电脑，确认电脑开着、墨守服务在运行、和 X4 在同一网络"
       if was ~= "lost" or S.fails == 1 then ctx:invalidate() end
       schedule(math.min(30000, 3000 * S.fails))
     end
@@ -270,7 +270,7 @@ end
 ---------------------------------------------------------------- 配对
 local function ask_link()
   local cur = CTX.state.link or {}
-  CTX.input:text({ title = "电脑地址（inkwatch serve 显示的）", text = cur.host or "192.168.", max_bytes = 40 }, function(ctx, host)
+  CTX.input:text({ title = "电脑地址（安装后终端里显示的）", text = cur.host or "192.168.", max_bytes = 40 }, function(ctx, host)
     if not host or host == "" then return end
     host = host:gsub("^%s+", ""):gsub("%s+$", ""):gsub("^http://", "")
     if not host:find(":") then host = host .. ":47320" end
@@ -386,11 +386,11 @@ local function screen_pair(g)
   stage(g, S.conn == "lost" and "sleepy" or "hello", S.conn == "lost" and "找不到你的电脑" or "你好，我是墨守", line2)
   local y = card_head(g, nil, "连接你的电脑", "局域网直连")
   local steps = {
-    { "1", "电脑终端运行一次（需要 Node 18+）" },
-    { nil, "npx github:linchuanXu/inkwatch install", true },
+    { "1", "电脑上打开安装说明，复制一行命令运行" },
+    { nil, "github.com/linchuanXu/inkwatch", true },
     { "2", "终端最后会显示「电脑地址」和「配对码」" },
     { "3", "点下面的按钮填进来，只填一次" },
-    { nil, "忘了地址：终端运行同一行命令，把 install 换成 status", false, true },
+    { nil, "忘了地址：node ~/.inkwatch/inkwatch.mjs status", false, true },
   }
   for _, s in ipairs(steps) do
     if s[3] then
