@@ -1,0 +1,17 @@
+{
+  "api": "2.21",
+  "app_id": "inkwatch",
+  "display_name": "墨守",
+  "display_names": {
+    "zh": "墨守",
+    "en": "InkWatch"
+  },
+  "version": "0.1.0",
+  "description": "把电脑上 AI 智能体（DSH、Claude Code、Codex）的状态放到桌上：在干什么、做到哪一步、哪里卡住；要执行危险命令时直接在屏上允许或拒绝。电脑上运行 inkwatch 小程序，局域网直连，不经过任何服务器。",
+  "entry": "index.lua",
+  "display": {
+    "orientation": "landscape"
+  },
+  "permissions": ["net"],
+  "app_icon_s": "app_icon_s"
+}

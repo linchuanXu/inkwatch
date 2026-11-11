@@ -1,0 +1,10 @@
+{
+  "name": "inkwatch",
+  "version": "0.1.0",
+  "description": "墨守：把电脑上 AI 智能体（DSH / Claude Code / Codex）的状态推到 X4 墨水屏，并在 X4 上审批危险命令",
+  "type": "module",
+  "bin": { "inkwatch": "bin/inkwatch.mjs" },
+  "files": ["bin/"],
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
