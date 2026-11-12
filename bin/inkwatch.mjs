@@ -88,12 +88,19 @@ const RISKY = [
   [/\bInvoke-(WebRequest|RestMethod)\b.*-Method\s+(Post|Put|Delete|Patch)/i, '向外部发送数据'],
   [/\breg\s+(delete|add)\b|\bSet-ItemProperty\b.*HK(LM|CU):/i, '改注册表'],
 ]
+// 这一段命令里出现的网址全是本机的（没写网址的不算，照样确认）
+const LOCAL_HOST = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])(:\d+)?(\/|$)/i
+function LOCAL_ONLY(seg) {
+  const urls = seg.match(/https?:\/\/[^\s"'<>|;)]+/gi) || []
+  return urls.length > 0 && urls.every((u) => LOCAL_HOST.test(u))
+}
 // 只看真正要执行的命令：去掉 here-doc 正文和引号里的字符串，再按 ; && || | 换行 拆成一条条
 function cleanCommand(raw) {
   return String(raw)
     .replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, '<<DOC') // here-doc 正文
-    .replace(/'[^']*'/g, "''")
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    // 引号里的字符串清空，但网址留着（判断 curl 发往哪里要用）
+    .replace(/'[^']*'/g, (m) => (/^'https?:\/\/\S+'$/.test(m) ? m.slice(1, -1) : "''"))
+    .replace(/"(?:[^"\\]|\\.)*"/g, (m) => (/^"https?:\/\/\S+"$/.test(m) ? m.slice(1, -1) : '""'))
 }
 function segments(raw) {
   return cleanCommand(raw).replace(/\\\n/g, ' ').split(/&&|\|\||;|\n|\|/).map((x) => x.trim()).filter(Boolean)
@@ -104,7 +111,11 @@ function riskOf(tool, input) {
   if (!/bash|shell|exec|pwsh|command/.test(t)) return null
   const cmd = String(input?.command ?? input?.cmd ?? (Array.isArray(input) ? input.join(' ') : ''))
   for (const seg of segments(cmd)) {
-    for (const [re, why] of RISKY) if (re.test(seg)) return { why, seg }
+    for (const [re, why] of RISKY) {
+      if (!re.test(seg)) continue
+      if (why === '向外部发送数据' && LOCAL_ONLY(seg)) continue // 发给本机（浏览器桥、本地服务）不算出门
+      return { why, seg }
+    }
   }
   return null
 }
@@ -589,7 +600,10 @@ async function hook(source) {
   let ev = {}
   try { ev = JSON.parse(raw || '{}') } catch { process.exit(0) }
   let approve = null
-  if (ev.hook_event_name === 'PreToolUse' && conf.approve !== 'none') {
+  // 你在智能体里选了「不用问我」（Claude Code 的 bypassPermissions / auto / dontAsk，Codex 的 never），
+  // 墨守也不拦：照常显示在干什么，但不停下来等 X4
+  const noAsk = /^(bypassPermissions|auto|dontAsk|never)$/i.test(String(ev.permission_mode || ev.approval_policy || ''))
+  if (ev.hook_event_name === 'PreToolUse' && conf.approve !== 'none' && !noAsk) {
     const r = riskOf(ev.tool_name, parseInput(ev.tool_input))
     approve = r ? r.why : (conf.approve === 'all' && /bash|shell|exec/i.test(ev.tool_name || '') ? '每条命令都要确认' : null)
   }
