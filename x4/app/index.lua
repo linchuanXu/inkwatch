@@ -18,6 +18,7 @@ local S = {
   fails = 0,
 }
 local job, retry_timer
+local redraw -- 见下面「重画」
 
 ---------------------------------------------------------------- 小工具
 local function font_px(px, sample)
@@ -79,9 +80,13 @@ local function quad(pts, x0, y0, cx, cy, x1, y1, n)
   end
 end
 
--- 100×100 方格里的眼睛，(ox, oy) 左上角，s 缩放
-local function eyes(g, kind, ox, oy, s, col)
+-- 100×100 方格里的眼睛，(ox, oy) 左上角，s 缩放。
+-- a（动画姿势，可空）：dx/dy 眼珠偏移（格子单位），blink 眨眼（true = 闭成一条线），big 瞪大倍数
+local function eyes(g, kind, ox, oy, s, col, a)
+  a = a or {}
+  ox, oy = ox + (a.dx or 0) * s, oy + (a.dy or 0) * s
   local function P(x, y) return math.floor(ox + x * s + 0.5), math.floor(oy + y * s + 0.5) end
+  if a.blink and kind ~= "happy" and kind ~= "angry" then kind = "sleepy" end
   local lw = math.max(2, math.floor(6 * s + 0.5))
   local function pill(x, y, w, h)
     local px, py = P(x, y)
@@ -91,11 +96,11 @@ local function eyes(g, kind, ox, oy, s, col)
   if kind == "hello" then
     pill(28, 38, 13, 26); pill(59, 38, 13, 26)
   elseif kind == "think" then
-    pill(36, 28, 13, 22); pill(65, 28, 13, 22)
+    pill(31, 30, 13, 24); pill(56, 30, 13, 24) -- 往上看，左右靠动画转
   elseif kind == "ask" then
-    local a, b = P(34, 50); local c, d = P(66, 50)
-    local r = math.floor(11 * s + 0.5)
-    g:circle(a, b, r, { fill = true, color = col }); g:circle(c, d, r, { fill = true, color = col })
+    local r = math.floor(11 * (a.big or 1) * s + 0.5)
+    local x1, y1 = P(34, 50); local x2, y2 = P(66, 50)
+    g:circle(x1, y1, r, { fill = true, color = col }); g:circle(x2, y2, r, { fill = true, color = col })
   elseif kind == "angry" then
     for side = 0, 1 do
       local function X(x) return side == 0 and x or 100 - x end
@@ -136,18 +141,61 @@ local function ring(g, cx, cy, r)
   for _, s in ipairs(segs) do g:line(cx + s[1], cy + s[2], cx + s[3], cy + s[4], { line_width = 2 }) end
 end
 
--- 字号只开 3 个：s18 正文、b22 标题和按钮、b28 主句和大数字。墨水屏 1 位显示，小字发虚，不要再加更小的
+-- 字号只开 3 个：F.s 正文 20、F.t 标题和按钮 24、F.h 主句和大数字 30。应用帧是黑白快刷，细笔画 1 像素会发虚，不要再加更小的
 -- 左栏：脸 + 一句话 + 小字，整组在页眉线和页脚线之间居中
+---------------------------------------------------------------- 脸的小动画
+-- 每种表情一串姿势，每个姿势停一帧以上（墨水屏约 650 ms 一帧），播完停在第一个姿势，
+-- 隔一会儿再播一次。只有脸在动，右边信息不动；播的时候推迟自动全刷，免得中途闪屏。
+local MOTION = {
+  sleepy = { every = 9000, poses = { {}, { dy = -4 }, {}, { dy = -4 }, {} } },                 -- 打瞌睡点头
+  hello  = { every = 6000, poses = { {}, { blink = true }, {} } },                              -- 眨眼
+  think  = { every = 5000, poses = { {}, { dx = -9 }, { dx = 9 }, { dx = -9 }, {} } },         -- 左右看
+  ask    = { every = 4000, poses = { {}, { big = 1.25 }, {}, { big = 1.25 }, {} } },           -- 瞪眼
+  angry  = { every = 6000, poses = { {}, { dx = -3 }, { dx = 3 }, { dx = -3 }, {} } },         -- 发抖
+  happy  = { every = 7000, poses = { {}, { dy = -6, bob = -8 }, {}, { dy = -6, bob = -8 }, {} } }, -- 跳
+}
+local A = { kind = nil, i = 1, timer = nil }
+local FACE_RECT -- 本帧脸所在区域，动画只在它可见时播
+
+local function pose() local m = MOTION[A.kind]; return m and m.poses[A.i] or {} end
+
+local anim_step
+local function anim_start(kind)
+  if A.kind == kind then return end
+  A.kind, A.i = kind, 1
+  if A.timer then A.timer:cancel(); A.timer = nil end
+  local m = MOTION[kind]
+  if m then A.timer = CTX:after(m.every, anim_step) end
+end
+function anim_step()
+  A.timer = nil
+  local m = MOTION[A.kind]
+  if not m or not FACE_RECT then return end
+  A.i = A.i + 1
+  if A.i > #m.poses then
+    A.i = 1
+    A.timer = CTX:after(m.every, anim_step)
+  else
+    if CTX.defer_full_refresh then CTX:defer_full_refresh(1500) end
+    A.timer = CTX:after(700, anim_step)
+  end
+  CTX:invalidate()
+end
+
 local function face(g, kind, cx, cy, r)
+  anim_start(kind)
+  local a = pose()
+  local by = a.bob or 0
+  FACE_RECT = true
   ring(g, cx, cy, r + 20)
-  g:circle(cx, cy, r, { fill = true })
-  eyes(g, kind, cx - r, cy - r, r / 50, 0)
+  g:circle(cx, cy + by, r, { fill = true })
+  eyes(g, kind, cx - r, cy + by - r, r / 50, 0, a)
 end
 local function stage(g, kind, line1, line2)
   local cx = 195
   face(g, kind, cx, 184, 100)
-  text(g, cx, 338, fit(line1, F.b28, 340), F.b28, { align = "center", valign = "middle", bold = true })
-  if line2 and line2 ~= "" then text(g, cx, 374, fit(line2, F.s18, 340), F.s18, { align = "center", valign = "middle" }) end
+  text(g, cx, 338, fit(line1, F.h, 340), F.h, { align = "center", valign = "middle", bold = true })
+  if line2 and line2 ~= "" then text(g, cx, 374, fit(line2, F.s, 340), F.s, { align = "center", valign = "middle" }) end
 end
 
 ---------------------------------------------------------------- 画法零件
@@ -162,7 +210,7 @@ local function src_badge(g, x, y, src)
   local im = LOGO[src] and CTX.package:image(LOGO[src])
   if im then g:image(im, x, y) return end
   g:rect(x, y, 36, 36, { radius = 9, fill = true })
-  text(g, x + 18, y + 18, "AI", F.s18, { align = "center", valign = "middle", color = 0, bold = true })
+  text(g, x + 18, y + 18, "AI", F.s, { align = "center", valign = "middle", color = 0, bold = true })
 end
 
 local function card_head(g, src, title, tag, tag_solid)
@@ -171,21 +219,21 @@ local function card_head(g, src, title, tag, tag_solid)
   if src then src_badge(g, x, PY + 10, src); x = x + 46 end
   local tw = 0
   if tag and tag ~= "" then
-    tw = F.s18:measure(tag) + 20
+    tw = F.s:measure(tag) + 20
     local tx = PX + PW - 16 - tw
     g:rect(tx, PY + 14, tw, 28, { radius = 14, fill = tag_solid, line_width = 2 })
-    text(g, tx + tw // 2, PY + 28, tag, F.s18, { align = "center", valign = "middle", color = tag_solid and 0 or 15 })
+    text(g, tx + tw // 2, PY + 28, tag, F.s, { align = "center", valign = "middle", color = tag_solid and 0 or 15 })
   end
-  text(g, x, PY + 28, fit(title, F.b22, PX + PW - 16 - tw - 10 - x), F.b22, { valign = "middle", bold = true })
+  text(g, x, PY + 28, fit(title, F.t, PX + PW - 16 - tw - 10 - x), F.t, { valign = "middle", bold = true })
   g:rect(IX, PY + 54, IW, 2, { fill = true })
   return PY + 68
 end
 
 local function button(g, x, y, w, h, label, solid, fn, f)
-  f = f or F.b22
+  f = f or F.t
   if solid then g:rect(x, y, w, h, { radius = 12, fill = true })
   else g:rect(x, y, w, h, { radius = 12, line_width = 2 }) end
-  text(g, x + w // 2, y + h // 2, label, f, { align = "center", valign = "middle", color = solid and 0 or 15, bold = f ~= F.s18 })
+  text(g, x + w // 2, y + h // 2, label, f, { align = "center", valign = "middle", color = solid and 0 or 15, bold = f ~= F.s })
   hit(x, y, w, h, fn)
 end
 
@@ -195,8 +243,8 @@ local function stat_boxes(g, y, items)
   for i, it in ipairs(items) do
     local x = IX + (i - 1) * (w + 8)
     g:rect(x, y, w, 84, { radius = 10, line_width = 2 })
-    text(g, x + w // 2, y + 22, it[1], F.s18, { align = "center", valign = "middle" })
-    text(g, x + w // 2, y + 58, fit(it[2], F.b28, w - 12), F.b28, { align = "center", valign = "middle", bold = true })
+    text(g, x + w // 2, y + 22, it[1], F.s, { align = "center", valign = "middle" })
+    text(g, x + w // 2, y + 58, fit(it[2], F.h, w - 12), F.h, { align = "center", valign = "middle", bold = true })
   end
   return y + 96
 end
@@ -224,7 +272,7 @@ local function poll(wait)
       if type(d) == "table" then
         local changed = num(d.rev) ~= S.rev or S.conn ~= "ok"
         S.data, S.rev, S.conn, S.err, S.fails = d, num(d.rev), "ok", nil, 0
-        if changed then ctx:invalidate() end
+        if changed then redraw() end
       end
       schedule(0)
     elseif res.ok and res.status == 401 then
@@ -259,7 +307,7 @@ local function post(path, body)
         local d = ctx.json:decode(res.body)
         if type(d) == "table" then S.data, S.rev = d, num(d.rev) end
       end
-      ctx:invalidate()
+      redraw()
       schedule(0)
     end)
     if not j and err == "busy" then CTX:after(500, go) end -- 被取消的长轮询还没释放
@@ -311,50 +359,50 @@ local function draw_bar(g)
     hm = string.format("%02d:%02d", now.hour, now.minute)
     md = string.format("周%s", wd[(now.weekday or 0) % 7 + 1] or "")
   end
-  text(g, M, 22, hm, F.b22, { valign = "middle", bold = true })
-  text(g, M + F.b22:measure(hm, { bold = true }) + 10, 22, md, F.s18, { valign = "middle" })
+  text(g, M, 22, hm, F.t, { valign = "middle", bold = true })
+  text(g, M + F.t:measure(hm, { bold = true }) + 10, 22, md, F.s, { valign = "middle" })
   -- 右边：只有「等你」用黑底胶囊（要你动手），连接状态和电量是普通小字
   local b = CTX.device:battery()
   local x = 800 - M
   local bat = "电量 " .. ((b and b.percent and b.percent >= 0) and b.percent or "--") .. "%"
-  text(g, x, 22, bat, F.s18, { align = "right", valign = "middle" })
-  x = x - F.s18:measure(bat) - 20
+  text(g, x, 22, bat, F.s, { align = "right", valign = "middle" })
+  x = x - F.s:measure(bat) - 20
   local conn = ({ ok = "已连接", lost = "连不上电脑", connecting = "连接中…" })[S.conn] or "未连接"
-  text(g, x, 22, conn, F.s18, { align = "right", valign = "middle" })
-  x = x - F.s18:measure(conn) - 12
+  text(g, x, 22, conn, F.s, { align = "right", valign = "middle" })
+  x = x - F.s:measure(conn) - 12
   if S.conn == "ok" then g:circle(x, 22, 5, { fill = true }) else g:circle(x, 22, 5, { line_width = 2 }) end
   x = x - 20
   local nask = #asks_for()
   if nask > 0 then
     local s = "等你 " .. nask .. " 个"
-    local w = F.s18:measure(s) + 24
+    local w = F.s:measure(s) + 24
     g:rect(x - w, 7, w, 30, { radius = 15, fill = true })
-    text(g, x - w // 2, 22, s, F.s18, { align = "center", valign = "middle", color = 0, bold = true })
+    text(g, x - w // 2, 22, s, F.s, { align = "center", valign = "middle", color = 0, bold = true })
   end
   g:rect(0, 43, 800, 2, { fill = true })
 end
 
 local function draw_gear(g)
-  local w = F.s18:measure("连接设置") + 32
-  button(g, 800 - M - w, 422, w, 48, "连接设置", false, ask_link, F.s18)
+  local w = F.s:measure("连接设置") + 32
+  button(g, 800 - M - w, 422, w, 48, "连接设置", false, ask_link, F.s)
 end
 
 -- 底栏：详情页放「‹ 总览」，总览页放今天的数字；右边是设置
 local function draw_foot(g, back)
   g:rect(0, 412, 800, 2, { fill = true })
   if back then
-    button(g, M, 422, 140, 48, "", false, function() back(); CTX:invalidate() end)
-    local lw = F.b22:measure("总览", { bold = true })
+    button(g, M, 422, 140, 48, "", false, function() back(); redraw() end)
+    local lw = F.t:measure("总览", { bold = true })
     local x0 = M + (140 - lw - 18) // 2
     g:polyline({ x0 + 9, 437, x0, 446, x0 + 9, 455 }, { line_width = 3 })
-    text(g, x0 + 18, 446, "总览", F.b22, { valign = "middle", bold = true })
+    text(g, x0 + 18, 446, "总览", F.t, { valign = "middle", bold = true })
   elseif S.conn == "ok" and S.data then
     local t = S.data.today or {}
     local m = num(t.minutes)
     local s = "今天：完成 " .. num(t.done) .. " 个 · 用时 " .. (m >= 60 and ((m // 60) .. " 小时 " .. (m % 60) .. " 分") or (m .. " 分")) .. " · 审批 " .. num(t.asks) .. " 次"
-    text(g, M, 446, fit(s, F.s18, 620), F.s18, { valign = "middle" })
+    text(g, M, 446, fit(s, F.s, 620), F.s, { valign = "middle" })
   else
-    text(g, M, 446, "连上后，这里显示今天的进度", F.s18, { valign = "middle" })
+    text(g, M, 446, "连上后，这里显示今天的进度", F.s, { valign = "middle" })
   end
   draw_gear(g)
 end
@@ -367,10 +415,10 @@ local function session_row(g, x, y, w, h, s)
   if hot then g:rect(x + 2, y + 2, w - 4, h - 4, { radius = 10, line_width = 2 }) end -- 双线框 = 要你处理
   src_badge(g, x + 14, y + (h - 36) // 2, s.source)
   local chip = #asks_for(s.id) > 0 and "等你" or CHIP[s.state] or ""
-  local cw = F.s18:measure(chip) + 24
+  local cw = F.s:measure(chip) + 24
   local solid = s.state ~= "idle" and s.state ~= "done"
   g:rect(x + w - 14 - cw, y + (h - 30) // 2, cw, 30, { radius = 15, fill = solid, line_width = 2 })
-  text(g, x + w - 14 - cw // 2, y + h // 2, chip, F.s18, { align = "center", valign = "middle", color = solid and 0 or 15 })
+  text(g, x + w - 14 - cw // 2, y + h // 2, chip, F.s, { align = "center", valign = "middle", color = solid and 0 or 15 })
   local tx, tw = x + 62, w - 62 - cw - 28
   local sub
   local a = asks_for(s.id)[1]
@@ -379,11 +427,11 @@ local function session_row(g, x, y, w, h, s)
   elseif s.state == "error" then local e = s.error ~= CTX.json.null and s.error or {}; sub = str(e.cmd) ~= "" and ("跑 " .. str(e.cmd) .. " 出错") or "看看电脑"
   elseif s.state == "done" then sub = str(s.summary) ~= "" and str(s.summary) or ago(s.updated)
   else sub = "上次动静 " .. ago(s.updated) end
-  local lh = F.s18.line_height
-  local ty = y + (h - lh * 2 - 2) // 2
-  text(g, tx, ty, fit(label(s), F.s18, tw), F.s18, { bold = true })
-  text(g, tx, ty + lh + 2, fit(sub, F.s18, tw), F.s18)
-  hit(x, y, w, h, function() S.sel = s.id; CTX:invalidate() end)
+  local lh = F.s.line_height
+  local ty = y + (h - lh * 2) // 2
+  text(g, tx, ty, fit(label(s), F.s, tw), F.s, { bold = true })
+  text(g, tx, ty + lh, fit(sub, F.s, tw), F.s)
+  hit(x, y, w, h, function() S.sel = s.id; redraw() end)
 end
 
 local MOOD = { ask = "ask", error = "angry", work = "think", done = "happy", idle = "sleepy" }
@@ -398,8 +446,8 @@ local function screen_overview(g)
   local line1 = nask > 0 and ("等你确认 " .. nask .. " 个") or nerr > 0 and (nerr .. " 个卡住了") or nwork > 0 and (nwork .. " 个在干活") or st == "done" and "都做完了" or "都在待命"
   local cx = 150
   face(g, MOOD[st] or "sleepy", cx, 184, 92)
-  text(g, cx, 338, fit(line1, F.b28, 270), F.b28, { align = "center", valign = "middle", bold = true })
-  text(g, cx, 374, ss[1] and ("共 " .. #ss .. " 个会话") or "", F.s18, { align = "center", valign = "middle" })
+  text(g, cx, 338, fit(line1, F.h, 270), F.h, { align = "center", valign = "middle", bold = true })
+  text(g, cx, 374, ss[1] and ("共 " .. #ss .. " 个会话") or "", F.s, { align = "center", valign = "middle" })
   local x, w = 296, 800 - M - 296
   local n = math.min(#ss, 6)
   local gap = 8
@@ -415,8 +463,8 @@ end
 -- 一行带圆点序号的步骤
 local function step_line(g, y, n, s)
   g:circle(IX + 13, y, 13, { fill = true })
-  text(g, IX + 13, y, n, F.s18, { align = "center", valign = "middle", color = 0, bold = true })
-  text(g, IX + 36, y, fit(s, F.s18, IW - 36), F.s18, { valign = "middle" })
+  text(g, IX + 13, y, n, F.s, { align = "center", valign = "middle", color = 0, bold = true })
+  text(g, IX + 36, y, fit(s, F.s, IW - 36), F.s, { valign = "middle" })
 end
 
 -- ① 配对
@@ -427,7 +475,7 @@ local function screen_pair(g)
   y = y + (BOTTOM - 72 - y - 130) // 2 -- 两步在标题线和按钮之间居中
   step_line(g, y + 14, "1", "电脑上运行安装命令，见")
   g:rect(IX + 36, y + 38, IW - 36, 38, { radius = 8, fill = true })
-  text(g, IX + 48, y + 57, fit("github.com/linchuanXu/inkwatch", F.s18, IW - 60), F.s18, { valign = "middle", color = 0 })
+  text(g, IX + 48, y + 57, fit("github.com/linchuanXu/inkwatch", F.s, IW - 60), F.s, { valign = "middle", color = 0 })
   step_line(g, y + 116, "2", "填入终端显示的地址和配对码")
   local l = CTX.state.link
   button(g, IX, BOTTOM - 60, IW, 60, l and "重新填写" or "填写地址和配对码", true, ask_link)
@@ -442,13 +490,13 @@ local function screen_idle(g, cur)
   y = stat_boxes(g, y, { { "完成", tostring(num(t.done)) }, { "分钟", tostring(m) }, { "审批", tostring(num(t.asks)) } })
   local recent = list(t.recent)
   if #recent == 0 then
-    text(g, IX + IW // 2, (y + BOTTOM) // 2 - 14, "今天还没有完成的任务", F.s18, { align = "center", valign = "middle" })
-    text(g, IX + IW // 2, (y + BOTTOM) // 2 + 16, "在电脑上开个 DSH、Claude Code 或 Codex", F.s18, { align = "center", valign = "middle" })
+    text(g, IX + IW // 2, (y + BOTTOM) // 2 - 14, "今天还没有完成的任务", F.s, { align = "center", valign = "middle" })
+    text(g, IX + IW // 2, (y + BOTTOM) // 2 + 16, "在电脑上开个智能体试试", F.s, { align = "center", valign = "middle" })
   end
   for i, r in ipairs(recent) do
     if i > 3 or y + 36 > BOTTOM then break end
     check(g, IX, y + 8, "done")
-    text(g, IX + 32, y + 18, fit(r.title, F.s18, IW - 32), F.s18, { valign = "middle" })
+    text(g, IX + 32, y + 18, fit(r.title, F.s, IW - 32), F.s, { valign = "middle" })
     y = y + 40
   end
 end
@@ -476,14 +524,14 @@ local function screen_work(g, s)
   local foot = BOTTOM - 26
   g:rect(IX, foot - 14, IW, 2, { fill = true })
   local tools = "工具 " .. num(s.tools) .. " 次"
-  text(g, IX + IW, foot + 10, tools, F.s18, { align = "right", valign = "middle" })
-  text(g, IX, foot + 10, fit("你说：" .. str(s.prompt), F.s18, IW - F.s18:measure(tools) - 16), F.s18, { valign = "middle" })
+  text(g, IX + IW, foot + 10, tools, F.s, { align = "right", valign = "middle" })
+  text(g, IX, foot + 10, fit("你说：" .. str(s.prompt), F.s, IW - F.s:measure(tools) - 16), F.s, { valign = "middle" })
   local maxn = (foot - 18 - y) // 40
   local first = math.max(1, #items - maxn + 1)
   for i = first, #items do
     local it = items[i]
     check(g, IX, y + 10, it[2])
-    text(g, IX + 32, y + 20, fit(it[1], F.s18, IW - 32), F.s18, { valign = "middle", bold = it[2] == "run" })
+    text(g, IX + 32, y + 20, fit(it[1], F.s, IW - 32), F.s, { valign = "middle", bold = it[2] == "run" })
     y = y + 40
   end
 end
@@ -498,15 +546,15 @@ local function screen_ask(g, s, a)
   local hasw = str(a.why) ~= "" and str(a.why) ~= act
   local top = mid - (hasw and 46 or 29)
   g:rect(IX, top, IW, 58, { radius = 10, fill = true })
-  text(g, IX + IW // 2, top + 29, fit(act, F.b28, IW - 24), F.b28, { align = "center", valign = "middle", color = 0, bold = true })
+  text(g, IX + IW // 2, top + 29, fit(act, F.h, IW - 24), F.h, { align = "center", valign = "middle", color = 0, bold = true })
   if hasw then
-    text(g, IX + IW // 2, top + 78, fit("原因：" .. str(a.why), F.s18, IW), F.s18, { align = "center", valign = "middle" })
+    text(g, IX + IW // 2, top + 78, fit("原因：" .. str(a.why), F.s, IW), F.s, { align = "center", valign = "middle" })
   end
   local bw = (IW - 10) // 2
   button(g, IX, by, bw, 60, "拒绝", false, function() S.sel = nil; post("/answer", { id = a.id, answer = "deny" }) end)
   button(g, IX + bw + 10, by, bw, 60, "允许", true, function() S.sel = nil; post("/answer", { id = a.id, answer = "allow" }) end)
-  button(g, IX, by + 70, bw, 52, "电脑上看", false, function() S.sel = nil; post("/answer", { id = a.id, answer = "pass" }) end, F.s18)
-  button(g, IX + bw + 10, by + 70, bw, 52, "本会话都允许", false, function() S.sel = nil; post("/answer", { id = a.id, answer = "session" }) end, F.s18)
+  button(g, IX, by + 70, bw, 52, "电脑上看", false, function() S.sel = nil; post("/answer", { id = a.id, answer = "pass" }) end, F.s)
+  button(g, IX + bw + 10, by + 70, bw, 52, "本会话都允许", false, function() S.sel = nil; post("/answer", { id = a.id, answer = "session" }) end, F.s)
 end
 
 -- ⑤ 卡住
@@ -518,7 +566,7 @@ local function screen_error(g, s)
   local lh = 30
   local n = math.min(#tail, 3)
   for i = #tail - n + 1, #tail do
-    text(g, IX, y + 15, fit(tail[i], F.s18, IW), F.s18, { valign = "middle" })
+    text(g, IX, y + 15, fit(tail[i], F.s, IW), F.s, { valign = "middle" })
     y = y + lh
   end
   button(g, IX, BOTTOM - 60, IW, 60, "知道了", true, function() S.sel = nil; post("/ack", { id = s.id }) end)
@@ -530,8 +578,8 @@ local function screen_done(g, s)
   local y = card_head(g, s.source, label(s), "完成")
   local summary = str(s.summary) ~= "" and s.summary or s.prompt
   summary = str(summary):gsub("%*%*", ""):gsub("`", ""):gsub("\n%s*[-*]%s+", "；"):gsub("^%s*[-*]%s+", "")
-  local lh = F.s18.line_height
-  g:text_box(IX, y, IW, lh * 3, (str(summary):gsub("\n", " ")), { font = F.s18, wrap = "char", overflow = "ellipsis" })
+  local lh = F.s.line_height
+  g:text_box(IX, y, IW, lh * 3, (str(summary):gsub("\n", " ")), { font = F.s, wrap = "char", overflow = "ellipsis" })
   y = y + lh * 3 + 12
   stat_boxes(g, y, { { "改文件", tostring(#list(s.files)) }, { "工具", tostring(num(s.tools)) }, { "Token", tok(s.tokens) } })
   button(g, IX, BOTTOM - 56, IW, 56, "知道了", true, function() S.sel = nil; post("/ack", { id = s.id }) end)
@@ -542,9 +590,9 @@ function on_load(ctx)
   CTX = ctx
   CLASSIC = not ctx.input.pointer
   ctx.budget:extend()
-  F.s18 = font_px(18)
-  F.b22 = font_px(22)
-  F.b28 = font_px(28)
+  F.s = font_px(20)
+  F.t = font_px(24)
+  F.h = font_px(30)
   if ctx.net.keep_wifi then ctx.net:keep_wifi(-1) end -- 应用开着就一直在线
   if ctx.state.link then S.conn = "connecting"; schedule(0) end
   -- 每分钟重画一次：顶栏时间、「已等了几分钟」
@@ -557,12 +605,32 @@ function on_load(ctx)
   minute()
 end
 
+-- 这一帧该显示哪一屏（on_draw 和「要不要全刷」共用）
+local function pick_view()
+  if S.conn ~= "ok" or not S.data then return "pair" end
+  local ask
+  for _, a in ipairs(asks_for()) do if a.id ~= S.skip then ask = a; break end end
+  local cur = S.sel and find(S.sel)
+  if cur and asks_for(cur.id)[1] then ask = asks_for(cur.id)[1] end
+  if ask then return "ask:" .. ask.id, ask, cur end
+  if cur then return "s:" .. cur.id .. ":" .. str(cur.state), nil, cur end
+  return #sessions() == 0 and "idle" or "over"
+end
+-- 重画：换到另一屏就整屏全刷一次清残影（ctx:invalidate("full") 要在 on_draw 之外叫才对这一帧生效）
+local VIEW
+redraw = function()
+  local v = pick_view()
+  if VIEW ~= nil and v ~= VIEW then CTX:invalidate("full") else CTX:invalidate() end
+end
+
 function on_draw(ctx, g)
   ctx.budget:extend()
   HIT = {}
+  FACE_RECT = nil
   g:clear(0)
   draw_bar(g)
   if S.conn ~= "ok" or not S.data then
+    VIEW = "pair"
     screen_pair(g)
     draw_foot(g)
   else
@@ -572,6 +640,7 @@ function on_draw(ctx, g)
     local cur = S.sel and find(S.sel)
     if not cur then S.sel = nil end
     if cur and asks_for(cur.id)[1] then ask = asks_for(cur.id)[1] end -- 点了等你的那一行就看它的审批
+    VIEW = pick_view()
     if ask then
       screen_ask(g, find(ask.session), ask)
       draw_foot(g, function() S.skip = ask.id; S.sel = nil end)
@@ -591,7 +660,7 @@ function on_draw(ctx, g)
   end
   if S.busy then
     g:rect(320, 218, 160, 44, { radius = 22, fill = true })
-    text(g, 400, 240, "发送中…", F.b22, { align = "center", valign = "middle", color = 0 })
+    text(g, 400, 240, "发送中…", F.t, { align = "center", valign = "middle", color = 0 })
   end
 end
 
@@ -610,7 +679,7 @@ function on_input(ctx, ev)
       local away = S.sel ~= nil or (#asks_for() > 0 and asks_for()[1].id ~= S.skip)
       if away and ev.phase == "up" then
         if not S.sel then S.skip = asks_for()[1].id end
-        S.sel = nil; ctx:invalidate(); return true
+        S.sel = nil; redraw(); return true
       end
       return ev.phase ~= "up" or away
     end
