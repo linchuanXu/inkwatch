@@ -323,7 +323,7 @@ function sessionFor(source, ev) {
       // 项目名只在第一次见到时定下来，之后智能体 cd 到哪都不变
       project: folderOf(ev.cwd) || '未命名项目', cwd: ev.cwd || '',
       state: 'idle', prompt: '', firstPrompt: '', title: '', step: '', steps: [], todos: null, files: {},
-      tools: 0, subagents: 0, started: 0, updated: nowSec(), error: null, summary: '', titleAt: 0,
+      tools: 0, subagents: 0, started: 0, updated: nowSec(), created: Date.now(), error: null, summary: '', titleAt: 0,
     }
     sessions.set(id, s)
   }
@@ -464,7 +464,8 @@ function snapshot() {
   rollDay()
   // 20 分钟没动静、也没在等你的会话收起来
   for (const [id, s] of sessions) if (nowSec() - s.updated > 1200 && s.state !== 'ask') sessions.delete(id)
-  const list = [...sessions.values()].sort((a, b) => b.updated - a.updated).slice(0, 4)
+  // X4 总览按会话出现的先后排，顺序固定不跳；超过 6 个时留最近活跃的 6 个
+  const list = [...sessions.values()].sort((a, b) => b.updated - a.updated).slice(0, 6).sort((a, b) => a.created - b.created)
   const asks = [...pending.values()].map((p) => p.req).sort((a, b) => a.at - b.at)
   return {
     rev, now: nowSec(), host: os.hostname().replace(/\.local$/, ''),
