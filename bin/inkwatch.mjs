@@ -88,11 +88,24 @@ const RISKY = [
   [/\bInvoke-(WebRequest|RestMethod)\b.*-Method\s+(Post|Put|Delete|Patch)/i, '向外部发送数据'],
   [/\breg\s+(delete|add)\b|\bSet-ItemProperty\b.*HK(LM|CU):/i, '改注册表'],
 ]
+// 只看真正要执行的命令：去掉 here-doc 正文和引号里的字符串，再按 ; && || | 换行 拆成一条条
+function cleanCommand(raw) {
+  return String(raw)
+    .replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g, '<<DOC') // here-doc 正文
+    .replace(/'[^']*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+}
+function segments(raw) {
+  return cleanCommand(raw).replace(/\\\n/g, ' ').split(/&&|\|\||;|\n|\|/).map((x) => x.trim()).filter(Boolean)
+}
+// 返回 { why, seg }：哪条命令、为什么要确认
 function riskOf(tool, input) {
   const t = String(tool || '').toLowerCase()
   if (!/bash|shell|exec|pwsh|command/.test(t)) return null
   const cmd = String(input?.command ?? input?.cmd ?? (Array.isArray(input) ? input.join(' ') : ''))
-  for (const [re, why] of RISKY) if (re.test(cmd)) return why
+  for (const seg of segments(cmd)) {
+    for (const [re, why] of RISKY) if (re.test(seg)) return { why, seg }
+  }
   return null
 }
 
@@ -158,20 +171,26 @@ const CMD_RULES = [
   [/^(tar|zip|unzip|gzip)\b/, '打包或解压'], [/^(ffmpeg|magick|convert|sips)\b/, '处理图片或视频'], [/^(sqlite3|psql|mysql|redis-cli)\b/, '查数据库'],
   [/^(ds|opencode|claude|codex|dsh)\b/, '调用另一个 AI'], [/^(lark-cli)\b/, '操作飞书'],
 ]
+// 一条命令 → 一个短动作。多条连在一起时取第一条「干活的」（跳过 cd、export、赋值、sleep）。
+// 实在认不出就只说是什么命令（「xxx 命令」），绝不把原文搬上屏。
 function describeCommand(raw) {
-  // 拆成多条，跳过 cd / export / 赋值 / sleep / set
-  const parts = String(raw).replace(/\\\n/g, ' ').replace(/\$\([^)]*\)/g, 'X').split(/&&|\|\||;|\n|\|/).map((x) => x.trim()).filter(Boolean)
+  const parts = segments(String(raw).replace(/\$\([^)]*\)/g, 'X'))
+  let first = ''
   for (let p of parts) {
     p = p.replace(/^\(+|\)+$/g, '').replace(/^(\w+=("[^"]*"|'[^']*'|\S*)\s+)+/, '').trim()
-    if (!p || /^(cd|pushd|popd|export|set|source|\.|sleep|for|do|done|if|then|fi|else|while|local|mkdir\s+-p\s+\/tmp)\b/.test(p) || /^\w+=/.test(p)) continue
+    if (!p) continue
+    const word = base(p.split(/\s+/)[0].replace(/["']/g, ''))
+    if (!first && /^[\w.-]{1,16}$/.test(word)) first = word
+    if (/^(cd|pushd|popd|export|set|source|\.|sleep|for|do|done|if|then|fi|else|while|local|true|wait)\b/.test(p) || /^\w+=/.test(p)) continue
+    const w = p.match(/^(cat|tee)\s*(-a\s+)?>{1,2}\s*([^\s<]+)/) || p.match(/^(echo|printf)\b.*>{1,2}\s*([^\s<]+)$/)
+    if (w) return `写 ${base(w[w.length - 1].replace(/["']/g, ''))}`
     for (const [re, out] of CMD_RULES) {
       const m = p.match(re)
       if (m) return typeof out === 'function' ? out(m) : out
     }
-    const word = base(p.split(/\s+/)[0].replace(/["']/g, ''))
-    return /^[\w.-]{1,20}$/.test(word) ? `运行 ${word}` : '运行命令'
+    return /^[\w.-]{1,16}$/.test(word) ? `${word} 命令` : '运行命令'
   }
-  return '运行命令'
+  return first ? `${first} 命令` : '运行命令'
 }
 
 // 会话名：优先用智能体自己起的标题，其次是你第一句话，最后才是项目文件夹
@@ -338,6 +357,7 @@ function onEvent(source, ev) {
   if (name === 'SessionStart') {
     if (s.state === 'done' || s.state === 'error') s.state = 'idle'
   } else if (name === 'UserPromptSubmit') {
+    dropAsks(s.id)
     if (!s.firstPrompt && ev.prompt && !/^\s*</.test(ev.prompt)) s.firstPrompt = String(ev.prompt)
     // DSH 的会话标题由模型几秒后起好，写在它的会话日志里
     if (source === 'dsh' && !s.title) setTimeout(() => { const x = readDshSession(ev.session_id); if (x?.title) { s.title = x.title; bump() } }, 8000)
@@ -358,6 +378,7 @@ function onEvent(source, ev) {
       pushStep(s, d.text)
     }
   } else if (name === 'PostToolUse') {
+    dropAsks(s.id, ev.tool_use_id || '')
     const input = parseInput(ev.tool_input)
     const d = describeTool(ev.tool_name, input)
     if ((d.kind === 'write' || d.kind === 'edit') && d.file) {
@@ -374,6 +395,7 @@ function onEvent(source, ev) {
     }
     if (d.kind === 'agent') s.subagents = Math.max(0, s.subagents - 1)
   } else if (name === 'Stop' || name === 'SubagentStop') {
+    if (name === 'Stop') dropAsks(s.id)
     if (name === 'SubagentStop') { s.subagents = Math.max(0, s.subagents - 1); bump(); return }
     const last = s.steps[s.steps.length - 1]
     if (last && !last.done) { last.done = true; last.sec = nowSec() - last.at }
@@ -400,6 +422,14 @@ function onEvent(source, ev) {
 }
 
 // 审批：hook 进程把请求挂在这里，等 X4 回答；X4 不在或超时就交还给智能体自己的审批界面
+// 智能体那边已经不等了（自己放行、被取消、钩子超时、换了下一轮），X4 上的审批要跟着撤掉
+function dropAsks(sessionId, toolUseId) {
+  for (const p of [...pending.values()]) {
+    if (p.req.session !== sessionId) continue
+    if (toolUseId && p.req.toolUseId && p.req.toolUseId !== toolUseId) continue
+    p.finish('gone')
+  }
+}
 function askApproval(source, ev, why, waitMs) {
   rollDay()
   const s = sessionFor(source, ev)
@@ -407,7 +437,8 @@ function askApproval(source, ev, why, waitMs) {
   const id = crypto.randomBytes(6).toString('hex')
   const req = {
     id, session: s.id, source: s.source, name: s.name, project: s.project, label: labelOf(s), cwd: home(s.cwd),
-    action: describeTool(ev.tool_name, input).text,
+    action: (() => { const r = riskOf(ev.tool_name, input); return r ? describeCommand(r.seg) : describeTool(ev.tool_name, input).text })(),
+    toolUseId: ev.tool_use_id || '',
     tool: ev.tool_name, command: cap(input.command ?? input.cmd ?? JSON.stringify(input), 300),
     why, at: nowSec(),
   }
@@ -482,7 +513,10 @@ function serve() {
           if (!x4Alive) return send(res, 200, { decision: 'pass' })
           const s = sessionFor(source, event)
           if (s.allowAll) return send(res, 200, { decision: 'allow' })
-          const answer = await askApproval(source, event, why, 10 * 60 * 1000)
+          const waiting = askApproval(source, event, why, 10 * 60 * 1000)
+          const mine = [...pending.values()].pop()
+          res.on('close', () => { if (!res.writableEnded && mine) mine.finish('gone') })
+          const answer = await waiting
           return send(res, 200, { decision: answer === 'allow' ? 'allow' : answer === 'deny' ? 'deny' : 'pass' })
         }
         return send(res, 200, { ok: true })
@@ -555,7 +589,8 @@ async function hook(source) {
   try { ev = JSON.parse(raw || '{}') } catch { process.exit(0) }
   let approve = null
   if (ev.hook_event_name === 'PreToolUse' && conf.approve !== 'none') {
-    approve = conf.approve === 'all' && /bash|shell|exec/i.test(ev.tool_name || '') ? '需要确认' : riskOf(ev.tool_name, parseInput(ev.tool_input))
+    const r = riskOf(ev.tool_name, parseInput(ev.tool_input))
+    approve = r ? r.why : (conf.approve === 'all' && /bash|shell|exec/i.test(ev.tool_name || '') ? '每条命令都要确认' : null)
   }
   const body = JSON.stringify({ source, event: ev, approve })
   const result = await new Promise((resolve) => {
