@@ -97,25 +97,124 @@ function riskOf(tool, input) {
 }
 
 // ------------------------------------------------------------------ 把事件翻成墨水屏能看懂的一行
+// 屏上一律显示「人话」：命令翻成动作，文件只留文件名，内部记账类工具不显示
 function describeTool(tool, input) {
   const t = String(tool || '')
   const lt = t.toLowerCase()
   input = input || {}
   const file = input.file_path || input.path || input.filePath || input.notebook_path
-  if (/bash|shell|exec|pwsh|command/.test(lt)) return { kind: 'run', text: cap(input.command ?? input.cmd ?? '', 160) }
-  if (/^(read|view)$/.test(lt) || lt === 'read_file') return { kind: 'read', text: `读 ${short(file)}`, file }
-  if (/^(write|create)/.test(lt)) return { kind: 'write', text: `写 ${short(file)}`, file }
-  if (/edit|replace|patch/.test(lt)) return { kind: 'edit', text: `改 ${short(file)}`, file }
-  if (/glob|grep|search|find|ls/.test(lt)) return { kind: 'search', text: `搜索 ${cap(input.pattern ?? input.query ?? input.path ?? '', 60)}` }
-  if (/web|fetch|browse/.test(lt)) return { kind: 'web', text: `查网页 ${cap(input.url ?? input.query ?? '', 60)}` }
+  if (/^mcp__/.test(lt)) return describeMcp(lt, input)
+  if (/bash|shell|exec|pwsh|command/.test(lt)) {
+    const raw = String(input.command ?? input.cmd ?? '')
+    return { kind: 'run', text: describeCommand(raw), raw: cap(raw, 300) }
+  }
+  if (/^(read|view)$/.test(lt) || lt === 'read_file') return { kind: 'read', text: `读 ${base(file)}`, file }
+  if (/^(write|create)/.test(lt)) return { kind: 'write', text: `写 ${base(file)}`, file }
+  if (/edit|replace|patch/.test(lt)) return { kind: 'edit', text: `改 ${base(file)}`, file }
+  if (/glob|grep|search|find|^ls$/.test(lt)) return { kind: 'search', text: '查找文件' }
+  if (/web|fetch|browse/.test(lt)) return { kind: 'web', text: /search/.test(lt) ? '上网搜索' : `看网页 ${hostOf(input.url)}`.trim() }
   if (/todo/.test(lt)) return { kind: 'plan', text: '更新计划' }
-  if (/task|agent|subagent|spawn/.test(lt)) return { kind: 'agent', text: `派子代理：${cap(input.description ?? input.prompt ?? '', 40)}` }
-  return { kind: 'tool', text: t }
+  if (/task|agent|subagent|spawn/.test(lt)) return { kind: 'agent', text: `派子代理${input.description ? '：' + cap(input.description, 24) : ''}` }
+  if (/ask|question/.test(lt)) return { kind: 'ask', text: '问你一个问题' }
+  return { kind: 'tool', text: '使用工具' }
 }
-function short(p) {
-  if (!p) return ''
-  const parts = String(p).split('/')
-  return parts.slice(-2).join('/')
+function base(p) { return p ? path.basename(String(p)) : '' }
+function short(p) { return base(p) }
+function hostOf(u) { try { return new URL(String(u)).hostname.replace(/^www\./, '') } catch { return '' } }
+
+// MCP 工具：mcp__服务__方法。宿主自己的记账工具隐藏，其他按服务名给个中文说法
+const MCP_HIDE = /update_plan|wrap_up|mark_chapter|todo/
+const MCP_NAMES = [
+  [/figma/, '操作 Figma'], [/feishu|lark/, '操作飞书'], [/github/, '操作 GitHub'], [/browser|preview|playwright|chrome/, '操作浏览器'],
+  [/codegraph/, '查代码结构'], [/xtapp/, '操作 XTApp 预览'], [/slack/, '操作 Slack'], [/notion/, '操作 Notion'],
+  [/session|sidebar|window|view/, '管理会话'], [/terminal/, '操作终端'], [/sched|cron/, '安排定时任务'],
+]
+function describeMcp(lt, input) {
+  if (MCP_HIDE.test(lt)) return { kind: 'hidden', text: '' }
+  for (const [re, name] of MCP_NAMES) if (re.test(lt)) return { kind: 'tool', text: name }
+  return { kind: 'tool', text: '使用工具' }
+}
+
+// shell 命令 → 动作。只看第一条有意义的命令（跳过 cd、export、变量赋值、sleep）
+const CMD_RULES = [
+  [/^git\s+push\b.*(--force|-f\b)/, '强制推送代码'], [/^git\s+push\b/, '推送代码'], [/^git\s+(pull|fetch)\b/, '拉取代码'],
+  [/^git\s+commit\b/, '提交代码'], [/^git\s+(add|restore|rm)\b/, '整理改动'], [/^git\s+(diff|show)\b/, '看代码改动'],
+  [/^git\s+(status|log|branch|remote|rev-parse)\b/, '看 Git 状态'], [/^git\s+(checkout|switch|merge|rebase|reset|stash|cherry-pick)\b/, '切换或合并分支'],
+  [/^git\s+clone\b/, '下载仓库'], [/^gh\s+pr\b/, '处理 PR'], [/^gh\s+/, '操作 GitHub'],
+  [/^(npm|pnpm|yarn|bun)\s+(i|install|add|ci)\b/, '安装依赖'], [/^(npm|pnpm|yarn|bun)\s+(run\s+)?(test|vitest|jest)\b/, '跑测试'],
+  [/^(npm|pnpm|yarn|bun)\s+(run\s+)?build\b/, '构建项目'], [/^(npm|pnpm|yarn|bun)\s+(run\s+)?(dev|start|serve)\b/, '启动服务'],
+  [/^(npm|pnpm|yarn|bun)\s+(run\s+)?(lint|format|typecheck|check)\b/, '检查代码'], [/^(npm|pnpm|yarn|bun)\s+publish\b/, '发布软件包'],
+  [/^(npx|pnpm\s+dlx|bunx)\s+(vitest|jest|playwright)\b/, '跑测试'], [/^(pytest|python3?\s+-m\s+pytest|go\s+test|cargo\s+test|make\s+test)\b/, '跑测试'],
+  [/^(pip3?|uv|poetry)\s+(install|add|sync)\b/, '安装依赖'], [/^(make|cmake|cargo\s+build|go\s+build|idf\.py)\b/, '编译'],
+  [/^(python3?|node|deno|bun|ruby|perl|php|go\s+run|cargo\s+run)\b\s+(-[a-zA-Z]+\s+)*("[^"]+"|'[^']+'|[^\s|;&]+)/, (m) => /^-/.test(m[3]) ? '运行脚本' : `运行 ${base(m[3].replace(/["']/g, ''))}`],
+  [/^(python3?|node)\b/, '运行脚本'], [/^(sh|bash|zsh)\s+([^\s|;&]+)/, (m) => `运行 ${base(m[2].replace(/["']/g, ''))}`],
+  [/^(curl|wget|http|iwr|Invoke-WebRequest)\b/, '请求网络'], [/^(ssh|scp|rsync)\b/, '连接远程机器'],
+  [/^(kubectl|helm|terraform|docker|docker-compose)\b/, '操作部署环境'],
+  [/^(ls|tree|find|fd|du|stat|file|wc|Get-ChildItem)\b/, '查看文件'], [/^(cat|head|tail|less|sed\s+-n|bat|Get-Content|nl|jq)\b/, '读文件'],
+  [/^(grep|rg|ag|ack|Select-String)\b/, '搜索代码'], [/^(mkdir|New-Item)\b/, '建文件夹'], [/^(cp|mv|ln|Copy-Item|Move-Item)\b/, '整理文件'],
+  [/^(rm|rmdir|del|Remove-Item)\b/, '删除文件'], [/^(chmod|chown)\b/, '改文件权限'], [/^(sed|perl|awk)\b/, '批量改文本'],
+  [/^(echo|printf|true|test|\[)\b/, '输出信息'], [/^(open|code|cursor)\b/, '打开文件'], [/^(sudo)\b/, '用管理员权限运行'],
+  [/^(ps|top|kill|pkill|lsof)\b/, '查看进程'], [/^(diskutil|hdiutil)\b/, '操作磁盘'], [/^(brew|apt|apt-get|winget|choco)\b/, '安装软件'],
+  [/^(tar|zip|unzip|gzip)\b/, '打包或解压'], [/^(ffmpeg|magick|convert|sips)\b/, '处理图片或视频'], [/^(sqlite3|psql|mysql|redis-cli)\b/, '查数据库'],
+  [/^(ds|opencode|claude|codex|dsh)\b/, '调用另一个 AI'], [/^(lark-cli)\b/, '操作飞书'],
+]
+function describeCommand(raw) {
+  // 拆成多条，跳过 cd / export / 赋值 / sleep / set
+  const parts = String(raw).replace(/\\\n/g, ' ').replace(/\$\([^)]*\)/g, 'X').split(/&&|\|\||;|\n|\|/).map((x) => x.trim()).filter(Boolean)
+  for (let p of parts) {
+    p = p.replace(/^\(+|\)+$/g, '').replace(/^(\w+=("[^"]*"|'[^']*'|\S*)\s+)+/, '').trim()
+    if (!p || /^(cd|pushd|popd|export|set|source|\.|sleep|for|do|done|if|then|fi|else|while|local|mkdir\s+-p\s+\/tmp)\b/.test(p) || /^\w+=/.test(p)) continue
+    for (const [re, out] of CMD_RULES) {
+      const m = p.match(re)
+      if (m) return typeof out === 'function' ? out(m) : out
+    }
+    const word = base(p.split(/\s+/)[0].replace(/["']/g, ''))
+    return /^[\w.-]{1,20}$/.test(word) ? `运行 ${word}` : '运行命令'
+  }
+  return '运行命令'
+}
+
+// 会话名：优先用智能体自己起的标题，其次是你第一句话，最后才是项目文件夹
+function shortTitle(s) {
+  s = String(s || '').replace(/\s+/g, ' ').replace(/[`*_#>]/g, '').trim()
+  // 去掉常见的开头客套
+  s = s.replace(/^(帮我|请|麻烦|你|能不能|可以)+/, '')
+  const cut = s.split(/[，。！？,.!?；;：:\n]/)[0] || s
+  return cap(cut, 16)
+}
+function claudeTitle(transcript) {
+  // 只读文件末尾 256 KB，找最后一条 custom-title / ai-title / summary
+  try {
+    if (!transcript || !fs.existsSync(transcript)) return ''
+    const st = fs.statSync(transcript)
+    const n = Math.min(st.size, 256 * 1024)
+    const fd = fs.openSync(transcript, 'r')
+    const buf = Buffer.alloc(n)
+    fs.readSync(fd, buf, 0, n, st.size - n)
+    fs.closeSync(fd)
+    const lines = buf.toString('utf8').split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i]
+      if (!/"(custom-title|ai-title|summary)"/.test(l)) continue
+      try {
+        const e = JSON.parse(l)
+        const t = e.customTitle || e.aiTitle || e.title || e.summary
+        if (t) return String(t)
+      } catch {}
+    }
+  } catch {}
+  return ''
+}
+function folderOf(cwd) {
+  // 往上找 git 根目录当项目名；找不到就用当前文件夹
+  let d = cwd
+  for (let i = 0; d && i < 8; i++) {
+    if (fs.existsSync(path.join(d, '.git'))) return path.basename(d)
+    const up = path.dirname(d)
+    if (up === d) break
+    d = up
+  }
+  return path.basename(cwd || '') || ''
 }
 function parseInput(v) {
   if (v && typeof v === 'object') return v
@@ -202,15 +301,25 @@ function sessionFor(source, ev) {
   if (!s) {
     s = {
       id, source, name: SOURCES[source] || source,
-      project: path.basename(ev.cwd || '') || '?', cwd: ev.cwd || '',
-      state: 'idle', prompt: '', step: '', steps: [], todos: null, files: {},
-      tools: 0, subagents: 0, started: 0, updated: nowSec(), error: null, summary: '',
+      // 项目名只在第一次见到时定下来，之后智能体 cd 到哪都不变
+      project: folderOf(ev.cwd) || '未命名项目', cwd: ev.cwd || '',
+      state: 'idle', prompt: '', firstPrompt: '', title: '', step: '', steps: [], todos: null, files: {},
+      tools: 0, subagents: 0, started: 0, updated: nowSec(), error: null, summary: '', titleAt: 0,
     }
     sessions.set(id, s)
   }
-  if (ev.cwd) { s.cwd = ev.cwd; s.project = path.basename(ev.cwd) || s.project }
+  if (ev.transcript_path) s.transcript = ev.transcript_path
+  // Claude Code 的标题在会话记录里，最多 30 秒读一次
+  if (s.transcript && nowSec() - s.titleAt > 30) {
+    s.titleAt = nowSec()
+    const t = claudeTitle(s.transcript)
+    if (t) s.title = t
+  }
   s.updated = nowSec()
   return s
+}
+function labelOf(s) {
+  return shortTitle(s.title) || shortTitle(s.firstPrompt) || s.project
 }
 
 function pushStep(s, text) {
@@ -229,11 +338,15 @@ function onEvent(source, ev) {
   if (name === 'SessionStart') {
     if (s.state === 'done' || s.state === 'error') s.state = 'idle'
   } else if (name === 'UserPromptSubmit') {
+    if (!s.firstPrompt && ev.prompt && !/^\s*</.test(ev.prompt)) s.firstPrompt = String(ev.prompt)
+    // DSH 的会话标题由模型几秒后起好，写在它的会话日志里
+    if (source === 'dsh' && !s.title) setTimeout(() => { const x = readDshSession(ev.session_id); if (x?.title) { s.title = x.title; bump() } }, 8000)
     Object.assign(s, { state: 'work', prompt: cap(ev.prompt, 200), step: '思考中', steps: [], todos: null, files: {}, tools: 0, subagents: 0, started: Date.now(), error: null, summary: '' })
   } else if (name === 'PreToolUse') {
     if (s.state !== 'work') { s.state = 'work'; if (!s.started) s.started = Date.now() }
     const input = parseInput(ev.tool_input)
     const d = describeTool(ev.tool_name, input)
+    if (d.kind === 'hidden') { bump(); return }
     s.step = d.text
     s.tools++
     if (d.kind === 'plan' && Array.isArray(input.todos)) {
@@ -242,7 +355,7 @@ function onEvent(source, ev) {
       s.subagents++
       pushStep(s, d.text)
     } else if (d.kind !== 'read' && d.kind !== 'search') {
-      pushStep(s, d.kind === 'run' ? `跑 ${cap(d.text, 40)}` : d.text)
+      pushStep(s, d.text)
     }
   } else if (name === 'PostToolUse') {
     const input = parseInput(ev.tool_input)
@@ -255,7 +368,7 @@ function onEvent(source, ev) {
     }
     const resp = String(ev.tool_response ?? '')
     if (d.kind === 'run' && /\b(FAIL|failed|Error:|error:|Traceback|ERR!)\b/.test(resp)) {
-      s.error = { cmd: cap(d.text, 80), tail: resp.trim().split('\n').slice(-4).map((l) => cap(l, 70)) }
+      s.error = { cmd: d.text, tail: resp.trim().split('\n').slice(-4).map((l) => cap(l, 70)) }
     } else if (d.kind === 'run') {
       s.error = null
     }
@@ -274,7 +387,7 @@ function onEvent(source, ev) {
     s.doneAt = nowSec()
     if (!s.error) {
       today.done++; today.ms += ms
-      history.unshift({ source: s.source, project: s.project, title: cap(s.prompt, 40) || '任务', at: nowSec() })
+      history.unshift({ source: s.source, project: s.project, title: labelOf(s), at: nowSec() })
       while (history.length > 30) history.pop()
     }
     s.started = 0
@@ -293,7 +406,8 @@ function askApproval(source, ev, why, waitMs) {
   const input = parseInput(ev.tool_input)
   const id = crypto.randomBytes(6).toString('hex')
   const req = {
-    id, session: s.id, source: s.source, name: s.name, project: s.project, cwd: home(s.cwd),
+    id, session: s.id, source: s.source, name: s.name, project: s.project, label: labelOf(s), cwd: home(s.cwd),
+    action: describeTool(ev.tool_name, input).text,
     tool: ev.tool_name, command: cap(input.command ?? input.cmd ?? JSON.stringify(input), 300),
     why, at: nowSec(),
   }
@@ -317,8 +431,8 @@ function askApproval(source, ev, why, waitMs) {
 
 function snapshot() {
   rollDay()
-  // 超过 2 小时没动静的会话收起来
-  for (const [id, s] of sessions) if (nowSec() - s.updated > 7200 && s.state !== 'ask') sessions.delete(id)
+  // 20 分钟没动静、也没在等你的会话收起来
+  for (const [id, s] of sessions) if (nowSec() - s.updated > 1200 && s.state !== 'ask') sessions.delete(id)
   const list = [...sessions.values()].sort((a, b) => b.updated - a.updated).slice(0, 4)
   const asks = [...pending.values()].map((p) => p.req).sort((a, b) => a.at - b.at)
   return {
@@ -326,7 +440,7 @@ function snapshot() {
     today: { done: today.done, minutes: Math.round(today.ms / 60000), asks: today.asks, ask_avg_sec: today.asks ? Math.round(today.askMs / today.asks / 1000) : 0, recent: history.slice(0, 4) },
     asks,
     sessions: list.map((s) => ({
-      id: s.id, source: s.source, name: s.name, project: s.project, state: s.state,
+      id: s.id, source: s.source, name: s.name, project: s.project, label: labelOf(s), state: s.state,
       prompt: s.prompt, step: s.step,
       steps: s.steps.map((x) => ({ text: x.text, done: x.done, sec: x.sec || 0 })),
       todos: s.todos, tools: s.tools, subagents: s.subagents,
@@ -574,14 +688,17 @@ async function install(args) {
     const hooksFile = path.join(DIR, 'dsh-hooks.json')
     fs.writeFileSync(hooksFile, JSON.stringify({ hooks: hooksFor('dsh') }, null, 2))
     const profiles = path.join(HOME, '.dsh', 'profiles')
-    const names = fs.existsSync(profiles) ? fs.readdirSync(profiles).filter((n) => fs.existsSync(path.join(profiles, n, 'cordis.patch.yml'))) : []
+    // 跳过 DSH 自己留的备份目录（web.backup-时间戳）
+    const names = fs.existsSync(profiles) ? fs.readdirSync(profiles).filter((n) => !/\.backup-/.test(n) && fs.existsSync(path.join(profiles, n, 'cordis.patch.yml'))) : []
     const block = `\n# inkwatch: X4 状态屏（inkwatch uninstall 会删掉这段）\n- insert:\n    - id: inkwatch-hooks\n      name: '@deepseek-ai/dsh-hooks-claude-code'\n      config:\n        configPath: ${q(hooksFile)}\n# /inkwatch\n`
     for (const n of names) {
       const f = path.join(profiles, n, 'cordis.patch.yml')
       const txt = fs.readFileSync(f, 'utf8')
       if (txt.includes('inkwatch-hooks')) continue
       fs.copyFileSync(f, f + '.bak-inkwatch')
-      fs.writeFileSync(f, txt.replace(/\s*$/, '\n') + block)
+      // 补丁文件是一个 YAML 数组：空的写成「[]」，要换成列表项，不能在后面直接追加
+      const body = txt.replace(/^\[\]\s*$/m, '').replace(/\s*$/, '\n')
+      fs.writeFileSync(f, body + block)
     }
     const extra = path.join(DIR, 'dsh-patch.yml')
     fs.writeFileSync(extra, block.trimStart())
@@ -616,7 +733,8 @@ function uninstall() {
     const f = path.join(profiles, n, 'cordis.patch.yml')
     if (!fs.existsSync(f)) continue
     const txt = fs.readFileSync(f, 'utf8')
-    const cut = txt.replace(/\n# inkwatch: X4[\s\S]*?# \/inkwatch\n/, '\n')
+    let cut = txt.replace(/\n?# inkwatch: X4[\s\S]*?# \/inkwatch\n/, '\n')
+    if (!/^\s*-/m.test(cut)) cut = cut.replace(/\s*$/, '\n[]\n') // 只剩注释时还原成空数组
     if (cut !== txt) fs.writeFileSync(f, cut)
   }
   for (const file of [path.join(HOME, '.claude', 'settings.json'), path.join(HOME, '.codex', 'hooks.json')]) {

@@ -32,6 +32,8 @@ local function text(g, x, y, s, f, o)
 end
 local function hit(x, y, w, h, fn) HIT[#HIT + 1] = { x, y, w, h, fn } end
 local function str(v) if v == nil or v == CTX.json.null then return "" end return tostring(v) end
+-- 会话名：电脑端给的中文标题（智能体标题 / 你的第一句话），没有才用项目文件夹
+local function label(s) local l = str(s and s.label) return l ~= "" and l or str(s and s.project) end
 local function num(v) return type(v) == "number" and v or 0 end
 local function list(v) return type(v) == "table" and v or {} end
 
@@ -357,7 +359,7 @@ local function draw_dock(g, cur)
   local x = 14
   for _, s in ipairs(ss) do
     local on = cur and s.id == cur.id
-    local name, proj = str(s.name), fit(s.project, F.s13, 110)
+    local name, proj = fit(label(s), F.s13, 130), str(s.name)
     local w = 6 + 30 + 8 + math.max(F.s13:measure(name), F.s13:measure(proj)) + 14
     local n = #asks_for(s.id)
     local mark = n > 0 and tostring(n) or (s.state == "error" and "!" or nil)
@@ -368,7 +370,7 @@ local function draw_dock(g, cur)
     local c = on and 0 or 15
     g:rect(x + 6, 431, 30, 30, { radius = 8, line_width = 2, color = c })
     text(g, x + 21, 446, ({ dsh = "DS", claude = "CC", codex = "CX" })[s.source] or "AI", F.s13, { align = "center", valign = "middle", color = c, bold = true })
-    text(g, x + 44, 436, name, F.s13, { valign = "middle", color = c })
+    text(g, x + 44, 436, name, F.s13, { valign = "middle", color = c, bold = true })
     text(g, x + 44, 455, proj, F.s13, { valign = "middle", color = c })
     if mark then
       g:circle(x + w - 20, 446, 9, { fill = true, color = on and 0 or 15 })
@@ -445,7 +447,7 @@ local function screen_work(g, s)
     line2 = "已 " .. dur(s.elapsed) .. " · 调用工具 " .. num(s.tools) .. " 次"
   end
   stage(g, "think", str(s.step) ~= "" and str(s.step) or "思考中", line2)
-  local y = card_head(g, s.source, s.project, "进行中", true)
+  local y = card_head(g, s.source, label(s), "进行中", true)
   if str(s.prompt) ~= "" then y = quote(g, y, "「" .. str(s.prompt) .. "」", 2) end
   local items = {}
   if #todos > 0 then
@@ -475,15 +477,17 @@ end
 local function screen_ask(g, s, a)
   local waited = num(S.data.now) - num(a.at)
   stage(g, "ask", "这条命令我不敢自己跑", "已经等了 " .. dur(waited))
-  local y = card_head(g, a.source, str(a.project) .. " 想执行", "需要确认", true)
-  local lh = F.s15.line_height
-  local n = math.min(3, F.s15:layout(str(a.command), IW - 24, 2000, { wrap = "char" }))
-  g:rect(IX, y, IW, n * lh + 18, { radius = 10, fill = true })
-  g:text_box(IX + 12, y + 9, IW - 24, n * lh, str(a.command), { font = F.s15, wrap = "char", overflow = "ellipsis", color = 0 })
-  y = y + n * lh + 28
-  row(g, y, "原因", str(a.why)); y = y + 26
-  row(g, y, "目录", str(a.cwd)); y = y + 26
-  row(g, y, "来自", str(a.name)); y = y + 26
+  local y = card_head(g, a.source, label(a), "需要确认", true)
+  local act = str(a.action) ~= "" and str(a.action) or str(a.why)
+  g:rect(IX, y, IW, 40, { radius = 10, fill = true })
+  text(g, IX + 14, y + 20, fit("想要" .. act, F.b17, IW - 28), F.b17, { valign = "middle", color = 0, bold = true })
+  y = y + 50
+  local lh = F.s13.line_height
+  local n = math.min(2, F.s13:layout(str(a.command), IW, 2000, { wrap = "char" }))
+  g:text_box(IX, y, IW, n * lh, str(a.command), { font = F.s13, wrap = "char", overflow = "ellipsis" })
+  y = y + n * lh + 10
+  row(g, y, "为什么要确认", str(a.why)); y = y + 26
+  row(g, y, "来自", str(a.name) .. " · " .. str(a.project)); y = y + 26
   local by = PY + PH - 114
   local bw = (IW - 10) // 2
   button(g, IX, by, bw, 46, "拒绝", false, function() post("/answer", { id = a.id, answer = "deny" }) end)
@@ -497,7 +501,7 @@ end
 local function screen_error(g, s)
   local e = s.error ~= CTX.json.null and s.error or {}
   stage(g, "angry", "卡住了！", str(e.cmd) ~= "" and ("跑 " .. str(e.cmd) .. " 出错") or "出错了")
-  local y = card_head(g, s.source, str(s.project) .. " · 出错", "需要你", true)
+  local y = card_head(g, s.source, label(s), "出错了", true)
   local tail = list(e.tail)
   local lh = F.s13.line_height
   g:rect(IX, y, IW, #tail * lh + 16, { radius = 10, line_width = 2 })
@@ -510,7 +514,7 @@ end
 -- ⑥ 完成
 local function screen_done(g, s)
   stage(g, "happy", "做完啦！", "用时 " .. dur(s.elapsed) .. " · " .. ago(s.updated))
-  local title = str(s.title) ~= "" and str(s.title) or str(s.project)
+  local title = label(s)
   local y = card_head(g, s.source, title, "完成")
   local summary = str(s.summary) ~= "" and s.summary or s.prompt
   y = quote(g, y, summary, 3)
