@@ -427,10 +427,11 @@ local function session_row(g, x, y, w, h, s)
   elseif s.state == "error" then local e = s.error ~= CTX.json.null and s.error or {}; sub = str(e.cmd) ~= "" and ("跑 " .. str(e.cmd) .. " 出错") or "看看电脑"
   elseif s.state == "done" then sub = str(s.summary) ~= "" and str(s.summary) or ago(s.updated)
   else sub = "上次动静 " .. ago(s.updated) end
-  local lh = F.s.line_height
-  local ty = y + (h - lh * 2) // 2
-  text(g, tx, ty, fit(label(s), F.s, tw), F.s, { bold = true })
-  text(g, tx, ty + lh, fit(sub, F.s, tw), F.s)
+  -- 两行字按中线摆：上行中心在行高 1/2 往上 13，下行往下 13。不靠 line_height
+  -- （没装字体时系统字 line_height 比字形矮，按它排会贴着上框）
+  local mid = y + h // 2
+  text(g, tx, mid - 13, fit(label(s), F.s, tw), F.s, { valign = "middle", bold = true })
+  text(g, tx, mid + 14, fit(sub, F.s, tw), F.s, { valign = "middle" })
   hit(x, y, w, h, function() S.sel = s.id; redraw() end)
 end
 
